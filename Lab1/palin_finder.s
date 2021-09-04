@@ -7,106 +7,105 @@
 
 .section .text
 
-// R0: Addresses
-// R1: Currently processing
-// R2: Input length
-// R3: Low index
-// R4: High index
-// R5: String input
-
 _start:
-	MOV R2, #0
-	MOV R3, #0
-
 	BL check_input
 	B check_palindrome
 
 check_input:
-	LDR R5, =input
+	LENGTH .req R0
+	LETTER_ADR .req R1
+	LETTER .req R2
+
+	LDR LETTER_ADR, =input
+	LDR LENGTH, =0
+
 check_input_internal:
-	LDRB R6, [R5], #1
-	CMP R6, #0
+	LDRB LETTER, [LETTER_ADR], #1
+	CMP LETTER, #0
 	
 	BXEQ LR
 	
-	ADD R2, #1
+	ADD LENGTH, #1
 	B check_input_internal
 	
 check_palindrome:
-	LDR R3, =input
-	ADD R4, R3, R2
+	PUSH {R4, R5, R6, R7}
+	INDEX_LOW .req R4
+	INDEX_HIGH .req R5
+	LETTER_LOW .req R6
+	LETTER_HIGH .req R7
+
+	LDR INDEX_LOW, =input
+	ADD INDEX_HIGH, INDEX_LOW, LENGTH
 
 restart_check:
-	CMP R3, R4
+	CMP INDEX_LOW, INDEX_HIGH
+	POPGE {R4, R5, R6, R7}
 	BGE palindrome_found
 
-skip_space_low:
-	LDRB R5, [R3]
-	CMP R5, #32
-	BGT skip_space_high
+	LDRB LETTER_LOW, [INDEX_LOW]
+	CMP LETTER_LOW, #32
 
-	ADD R3, #1
-	CMP R3, R4
-	BGE palindrome_found
+	ADDLE INDEX_LOW, #1
+	BLE restart_check
 
-	B skip_space_low
+	LDRB LETTER_HIGH, [INDEX_HIGH]
+	CMP LETTER_HIGH, #32
 
-skip_space_high:
-	LDRB R6, [R4]
-	CMP R6, #32
-	BGT lower_letters
+	SUB INDEX_HIGH, #1
 
-	SUB R4, #1
-	CMP R3, R4
-	BGE palindrome_found
+	BLE restart_check
 
-	B skip_space_high
+	ADD INDEX_LOW, #1
 
-lower_letters:
-	CMP R5, #97
-	ADDLT R5, #32
+	CMP LETTER_LOW, #97
+	ADDLT LETTER_LOW, #32
 
-	CMP R6, #97
-	ADDLT R6, #32
+	CMP LETTER_HIGH, #97
+	ADDLT LETTER_HIGH, #32
 
-	CMP R5, R6
+	CMP LETTER_LOW, LETTER_HIGH
+	POPNE {R4, R5, R6, R7}
 	BNE palindrome_not_found
 
-	ADD R3, #1
-	SUB R4, #1
 	B restart_check
 
 write_string:
-	LDR R0, =UART_ADDRESS
+	UART .req R0
+
+	LDR UART, =UART_ADDRESS
+
 write_string_internal:
-	LDRB R6, [R5], #1
-	CMP R6, #0
+	LDRB LETTER, [LETTER_ADR], #1
+	CMP LETTER, #0
 	BXEQ LR 
 
-	STR R6, [R0]
+	STR LETTER, [UART]
 	B write_string_internal
+
+display_led:
+	LDR R0, =LED_ADDRESS
+	STR R1, [R0]
+	BX LR
 
 palindrome_found:
 	// Write 'Palindrome detected' to UART
-	LDR R5, =pali
+	LDR LETTER_ADR, =pali
 	BL write_string
 
 	// Switch on only the 5 rightmost LEDs
 	LDR R1, =PALI_PATTERN
-	B palindrome_finish
-
+	BL display_led
+	B exit
+	
 palindrome_not_found:
 	// Write 'Not a palindrome' to UART
-	LDR R5, =npali
+	LDR LETTER_ADR, =npali
 	BL write_string
 
 	// Switch on only the 5 leftmost LEDs
 	LDR R1, =NPALI_PATTERN
-	B palindrome_finish
-
-palindrome_finish:
-	LDR R0, =LED_ADDRESS
-	STR R1, [R0]
+	BL display_led
 	B exit
 	
 exit:
