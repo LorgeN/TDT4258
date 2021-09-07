@@ -22,7 +22,7 @@ check_input:
 	// Load the address of the first letter to LETTER_ADR register
 	LDR LETTER_ADR, =input
 	// Make sure the initial value in the LENGTH register is 0
-	LDR LENGTH, =0
+	MOV LENGTH, #0
 
 check_input_internal:
 	// Load the current letter into the LETTER register, and increment the 
@@ -57,34 +57,58 @@ check_palindrome:
 // Internal looping branch point for the palindrome check
 restart_check:
 	CMP INDEX_LOW, INDEX_HIGH
+	// Ensure that we have not hit the middle of the string. If we have,
+	// we know that the string is a palindrome since we have found no
+	// letters that arent matching. If this is the case we branch to
+	// palindrome_found label, but first pop the callee-saved registers
+	// we use back from the stack
 	POPGE {R4, R5, R6, R7}
 	BGE palindrome_found
 
+	// Load the byte value at the low index address and compare it to
+	// 32 which is the highest ASCII value for whitespace 
 	LDRB LETTER_LOW, [INDEX_LOW]
 	CMP LETTER_LOW, #32
 
+	// If it's less than or equal to 32, we ignore it since it's white 
+	// space and restart the check. We have to add here only if it is
+	// invalid to avoid skipping letters when restarting from the procedure
+	// from the same check for high index
 	ADDLE INDEX_LOW, #1
 	BLE restart_check
 
+	// Same procedure for the high index as for the low index
 	LDRB LETTER_HIGH, [INDEX_HIGH]
 	CMP LETTER_HIGH, #32
 
+	// Move high index down 1. Don't need to check anything here as we
+	// know that there is no whitespace at low index
 	SUB INDEX_HIGH, #1
 
+	// Restart check if letter at high index is whitespace
 	BLE restart_check
 
+	// Now we increment the low index either way to prepare it for the
+	// next run, same as the decrement for index high earlier
 	ADD INDEX_LOW, #1
 
+	// Check casing for both letters. 97 is where lowercase letters
+	// start in ASCII. If the letter it is below that, it is uppercase
+	// and we add 32 to make it lowercase
 	CMP LETTER_LOW, #97
 	ADDLT LETTER_LOW, #32
 
 	CMP LETTER_HIGH, #97
 	ADDLT LETTER_HIGH, #32
 
+	// Compare the two letters. We expect them to be the same if this
+	// is a valid palindrome. If not, we have to exit the loop and call
+	// the palindrome_not_found label
 	CMP LETTER_LOW, LETTER_HIGH
 	POPNE {R4, R5, R6, R7}
 	BNE palindrome_not_found
 
+	// All is good so far; we restart the check for the next indices!
 	B restart_check
 
 write_string:
