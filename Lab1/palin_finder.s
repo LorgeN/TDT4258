@@ -1,3 +1,4 @@
+// Useful constants
 .equ LED_ADDRESS, 0xFF200000
 .equ UART_ADDRESS, 0xFF201000
 .equ PALI_PATTERN, 0b0000011111
@@ -11,33 +12,49 @@ _start:
 	BL check_input
 	B check_palindrome
 
+// Checks the length of the input and saves it in register R0 by iterating
+// until it reaches a null value
 check_input:
 	LENGTH .req R0
 	LETTER_ADR .req R1
 	LETTER .req R2
 
+	// Load the address of the first letter to LETTER_ADR register
 	LDR LETTER_ADR, =input
+	// Make sure the initial value in the LENGTH register is 0
 	LDR LENGTH, =0
 
 check_input_internal:
+	// Load the current letter into the LETTER register, and increment the 
+	// address by 1
 	LDRB LETTER, [LETTER_ADR], #1
+	// Compare letter to 0, which is null, indicating the end of the string
 	CMP LETTER, #0
 	
+	// If the current letter is null we exit the function
 	BXEQ LR
 	
+	// If not, we increment the length value by 1 and continue the loop
 	ADD LENGTH, #1
 	B check_input_internal
 	
+// Function to check if the input is a palindrome by iterating from both 
+// ends, skipping spaces and ignoring casing
 check_palindrome:
+	// Push the values of callee-saved registers to the stack so we can pop
+	// them back later
 	PUSH {R4, R5, R6, R7}
 	INDEX_LOW .req R4
 	INDEX_HIGH .req R5
 	LETTER_LOW .req R6
 	LETTER_HIGH .req R7
 
+	// Initialize values. INDEX_LOW is the left point of where we are 
+	// currently evaluating the string, INDEX_HIGH is the right part
 	LDR INDEX_LOW, =input
 	ADD INDEX_HIGH, INDEX_LOW, LENGTH
 
+// Internal looping branch point for the palindrome check
 restart_check:
 	CMP INDEX_LOW, INDEX_HIGH
 	POPGE {R4, R5, R6, R7}
