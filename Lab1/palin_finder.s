@@ -157,7 +157,6 @@ exit:
 	// Branch here for exit
 	B exit
 	
-
 .section .data
 .align
 	// This is the input you are supposed to check for a palindrome
@@ -170,6 +169,7 @@ exit:
     // input: .asciz "Never odd or even"
 
 	// Values for the messages we want to display
-	pali: .asciz "Palindrome detected"
-	npali: .asciz "Not a palindrome"
+	// Add \n to make the print in CPUlator a bit cleaner
+	pali: .asciz "Palindrome detected\n"
+	npali: .asciz "Not a palindrome\n"
 .end
