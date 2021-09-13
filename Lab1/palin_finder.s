@@ -49,6 +49,10 @@ check_palindrome:
 	LETTER_LOW .req R6
 	LETTER_HIGH .req R7
 
+	// Validate that the input is not less than 2 characters
+	CMP LENGTH, #2
+	BLT palindrome_not_found
+
 	// Initialize values. INDEX_LOW is the left point of where we are 
 	// currently evaluating the string, INDEX_HIGH is the right part
 	LDR INDEX_LOW, =input
