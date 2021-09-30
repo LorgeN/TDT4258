@@ -3,6 +3,11 @@
 #include <string.h>
 #include <assert.h>
 #include <inttypes.h>
+#include <stdbool.h>
+#include <math.h>
+#include <time.h>
+
+#define BIT_WIDTH(value) (1 + log2(value))
 
 typedef enum {dm, fa} cache_map_t;
 typedef enum {uc, sc} cache_org_t;
@@ -21,9 +26,21 @@ typedef struct {
     // remove the accesses or hits
 } cache_stat_t;
 
+typedef struct {
+    bool valid;
+    uint32_t tag;
+    uint64_t last_access; // Keep last access here to implement FIFO for FA
+} cache_line_t;
+
+typedef struct {
+    uint32_t blocks;
+    uint32_t bits_offset;
+    uint32_t bits_index;
+    uint32_t bits_tag;
+    cache_line_t *lines;
+} cache_t;
 
 // DECLARE CACHES AND COUNTERS FOR THE STATS HERE
-
 
 uint32_t cache_size; 
 uint32_t block_size = 64;
@@ -33,6 +50,47 @@ cache_org_t cache_org;
 // USE THIS FOR YOUR CACHE STATISTICS
 cache_stat_t cache_statistics;
 
+uint32_t get_tag(cache_t cache, mem_access_t access) {
+    return access.address & ~(0xFFFFFFFF >> cache.bits_tag); 
+}
+
+bool compare_line(cache_t cache, cache_line_t line, mem_access_t access) {
+    return line.valid && line.tag == get_tag(cache, access);
+}
+
+cache_t make_cache(uint32_t size, uint32_t block_size, cache_map_t map) {
+    cache_t cache;
+    cache.blocks = size / block_size;
+    cache.bits_offset = BIT_WIDTH(block_size);
+    cache.bits_index = (map == dm) ? BIT_WIDTH(cache.blocks) : 0;
+    cache.bits_tag = 32 - cache.bits_offset - cache.bits_index;
+    cache.lines = malloc(sizeof(cache_line_t) * cache.blocks);
+    return cache;
+}
+
+void insert_mem_fa(cache_t* cache, mem_access_t access) {
+    cache_line_t line;
+    for (uint32_t i = 0; i < cache->blocks; i++) {
+        cache_line_t curr = cache->lines[i];
+        if (!curr.valid) {
+            line = curr;
+            break;
+        }
+
+        if (!&line || line.last_access > curr.last_access) {
+            line = curr;
+        }
+    }
+
+    line.tag = get_tag(*cache, access);
+
+    struct timespec spec;
+    
+}
+
+void access_mem_fa(cache_t* cache, mem_access_t access) {
+
+}
 
 /* Reads a memory access from the trace file and returns
  * 1) access type (instruction or data access
@@ -57,7 +115,7 @@ mem_access_t read_transaction(FILE *ptr_file) {
             exit(0);
         }
         
-        /* Get the access type */        
+        /* Get the access type */
         token = strsep(&string, " \n");
         access.address = (uint32_t)strtol(token, NULL, 16);
 
@@ -121,7 +179,6 @@ void main(int argc, char** argv)
         exit(1);
     }
 
-    
     /* Loop until whole trace file has been read */
     mem_access_t access;
     while(1) {
@@ -145,5 +202,4 @@ void main(int argc, char** argv)
 
     /* Close the trace file */
     fclose(ptr_file);
-
 }
