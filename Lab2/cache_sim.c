@@ -76,6 +76,7 @@ cache_t *make_cache(uint32_t size, uint32_t block_size, cache_map_t map)
 
     size_t mem_size = sizeof(cache_t) + sizeof(cache_line_t) * blocks;
     cache_t *cache = malloc(mem_size);
+    memset(cache, 0, mem_size);
 
     cache->blocks = blocks;
     cache->bits_offset = BIT_WIDTH(block_size);
