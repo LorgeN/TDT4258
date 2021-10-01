@@ -69,7 +69,8 @@ uint32_t get_tag(cache_t cache, mem_access_t access)
 cache_t *make_cache(uint32_t size, uint32_t block_size, cache_map_t map)
 {
     uint32_t blocks = size / block_size;
-    if (blocks == 0) {
+    if (blocks == 0)
+    {
         printf("Invalid cache size %d! Needs to be larger than %d", size, block_size);
         exit(1);
     }
@@ -107,10 +108,15 @@ cache_total_t *make_total_cache(uint32_t size, uint32_t block_size, cache_map_t 
     return cache;
 }
 
-void insert_mem_fa(cache_t *cache, cache_stat_t statistics, mem_access_t access)
+void access_mem_fa(cache_t *cache, cache_stat_t *statistics, mem_access_t access)
 {
+    uint32_t tag = get_tag(*cache, access);
+
+    statistics->accesses++;
+
     cache_line_t line;
     uint32_t index;
+
     for (uint32_t i = 0; i < cache->blocks; i++)
     {
         cache_line_t curr = cache->lines[i];
@@ -118,7 +124,7 @@ void insert_mem_fa(cache_t *cache, cache_stat_t statistics, mem_access_t access)
         {
             index = i;
             line = curr;
-            break;
+            continue;
         }
 
         if (!&line || line.inserted_at > curr.inserted_at)
@@ -126,31 +132,8 @@ void insert_mem_fa(cache_t *cache, cache_stat_t statistics, mem_access_t access)
             index = i;
             line = curr;
         }
-    }
 
-    line.tag = get_tag(*cache, access);
-    // Only keep track of when inserted since we are implementing a FIFO queue
-    line.inserted_at = statistics.accesses;
-    line.valid = true;
-
-    cache->lines[index] = line;
-}
-
-void access_mem_fa(cache_t *cache, cache_stat_t *statistics, mem_access_t access)
-{
-    uint32_t tag = get_tag(*cache, access);
-
-    statistics->accesses++;
-
-    for (uint32_t i = 0; i < cache->blocks; i++)
-    {
-        cache_line_t line = cache->lines[i];
-        if (!line.valid)
-        {
-            continue;
-        }
-
-        if (line.tag != tag)
+        if (curr.tag != tag)
         {
             continue;
         }
@@ -159,7 +142,12 @@ void access_mem_fa(cache_t *cache, cache_stat_t *statistics, mem_access_t access
         return;
     }
 
-    insert_mem_fa(cache, *statistics, access);
+    // Only keep track of when inserted since we are implementing a FIFO queue
+    line.inserted_at = statistics->accesses;
+    line.valid = true;
+    line.tag = tag;
+
+    cache->lines[index] = line;
 }
 
 uint32_t get_index(cache_t cache, mem_access_t access)
