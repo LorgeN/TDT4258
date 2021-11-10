@@ -1,3 +1,4 @@
 cache_sim
 mem_trace.txt
 *.o
+.vscode

@@ -4,16 +4,20 @@
 #include <termios.h>
 #include <sys/select.h>
 #include <linux/input.h>
+#include <linux/fb.h>
 #include <stdbool.h>
 #include <string.h>
 #include <time.h>
 #include <poll.h>
+#include <dirent.h>
+#include <fcntl.h>
 
 // The game state can be used to detect what happens on the playfield
 #define GAMEOVER 0
 #define ACTIVE (1 << 0)
 #define ROW_CLEAR (1 << 1)
 #define TILE_ADDED (1 << 2)
+#define SENSEHAT_FB_NAME "RPi-Sense FB"
 
 // If you extend this structure, either avoid pointers or adjust
 // the game logic allocate/deallocate and reset the memory
@@ -64,7 +68,58 @@ gameConfig game = {
 // return false if something fails, else true
 bool initializeSenseHat()
 {
-    return true;
+    struct fb_fix_screeninfo fixed_info;
+
+    DIR *dir;
+    struct dirent *entry;
+
+    dir = opendir("/dev");
+
+    // Unable to open directory
+    if (!dir)
+    {
+        return false;
+    }
+
+    printf("Scanning /dev for sensehat...\n");
+    while ((entry = readdir(dir)) != NULL)
+    {
+        // Check if directory entry name starts with fb
+        if (strncmp(entry->d_name, "fb", 2))
+        {
+            continue;
+        }
+
+        printf("Found framebuffer %s!\n", entry->d_name);
+
+        char file_path[8];
+        strcpy(file_path, "/dev/");
+        strcat(file_path, &entry->d_name);
+
+        printf("Opening file descriptor of %s\n", file_path);
+        int filedesc = open(file_path, O_RDWR);
+        if (filedesc == -1) {
+            printf("Error occurred while opening file descriptor %s\n", file_path);
+            continue;
+        }
+        
+        // Attempted to retrieve fixed screen info
+        if (ioctl(filedesc, FBIOGET_FSCREENINFO, &fixed_info)) {
+            // If an error occurs, will not return 0
+            printf("Unable to load fixed screen info!\n");
+            continue;
+        }
+
+        printf("ID is %s!\n", fixed_info.id);
+        if (strcmp(fixed_info.id, SENSEHAT_FB_NAME) == 0) {
+            printf("Found sensehat at %s\n", file_path);
+            closedir(dir);
+            return true;
+        }
+    }
+
+    closedir(dir);
+    return false;
 }
 
 // This function is called when the application exits
