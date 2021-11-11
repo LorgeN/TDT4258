@@ -18,16 +18,18 @@
 #define ACTIVE (1 << 0)
 #define ROW_CLEAR (1 << 1)
 #define TILE_ADDED (1 << 2)
+
 #define SENSEHAT_FB_NAME "RPi-Sense FB"
-#define SENSEHAT_WHITE 0xFFFF
-#define SENSEHAT_OFF 0x0
+#define SENSEHAT_JS_NAME "Raspberry Pi Sense HAT Joystick"
+// Converts RGB888 to RGB565 by grabbing most significant bits of each color
+#define RGB(r, g, b) (((r & 0xF8) << 8) + ((g & 0xFC) << 3) + (b >> 3))
 
 // If you extend this structure, either avoid pointers or adjust
 // the game logic allocate/deallocate and reset the memory
 typedef struct
 {
     bool occupied;
-    u_int8_t color;
+    u_int16_t color;
 } tile;
 
 typedef struct
@@ -43,10 +45,11 @@ typedef struct
     unsigned long const rowsPerLevel;     // speed up after clearing rows
     unsigned long const initNextGameTick; // initial value of nextGameTick
 
-    unsigned int tiles; // number of tiles played
-    unsigned int rows;  // number of rows cleared
-    unsigned int score; // game score
-    unsigned int level; // game level
+    unsigned int tiles;      // number of tiles played
+    unsigned int rows;       // number of rows cleared
+    unsigned int score;      // game score
+    unsigned int level;      // game level
+    unsigned int colorIndex; // The current index of the color to use
 
     tile *rawPlayfield; // pointer to raw memory of the playfield
     tile **playfield;   // This is the play field array
@@ -59,6 +62,20 @@ typedef struct
                                 // lowers with increasing level, never reaches 0
 } gameConfig;
 
+typedef struct
+{
+    int filedesc;
+    u_int16_t *pixels;
+    u_int32_t screen_bytes;
+    struct fb_fix_screeninfo fix_info;
+    struct fb_var_screeninfo var_info;
+} sensehat_ctl_t;
+
+typedef struct
+{
+    int filedesc;
+} sensehat_joystick_t;
+
 gameConfig game = {
     .grid = {8, 8},
     .uSecTickTime = 10000,
@@ -66,34 +83,120 @@ gameConfig game = {
     .initNextGameTick = 50,
 };
 
-u_int32_t getLocation(u_int8_t x, u_int8_t y, struct fb_var_screeninfo vinfo, struct fb_fix_screeninfo finfo)
+sensehat_ctl_t sensehat_ctl;
+sensehat_joystick_t sensehat_joystick;
+
+// The default tetris color scheme. Fetched from
+// https://www.schemecolor.com/tetris-game-color-scheme.php
+u_int16_t COLORS[] = {RGB(3, 65, 174), RGB(114, 203, 59), RGB(255, 213, 0), RGB(255, 151, 28), RGB(255, 50, 19)};
+u_int16_t COLOR_COUNT = sizeof(COLORS) / sizeof(u_int16_t);
+
+// Converts game x, y coordinates to the correct memory offset to
+// display on the sensehat LED display
+u_int32_t getLocation(u_int8_t x, u_int8_t y)
 {
-    return x + vinfo.xoffset + (y + vinfo.yoffset) * vinfo.xres;
+    // Inverted x and y coordinates so that it is natural to play using
+    // the joystick with the right thumb.
+    return y + sensehat_ctl.var_info.xoffset + (x + sensehat_ctl.var_info.yoffset) * sensehat_ctl.var_info.xres;
 }
 
-void runTestPattern(u_int16_t *sh_mem, struct fb_var_screeninfo vinfo, struct fb_fix_screeninfo finfo)
+void clearPixels()
 {
-    printf("Running test pattern! Display is %u by %u\n", vinfo.yres, vinfo.xres);
+    memset(sensehat_ctl.pixels, 0, sensehat_ctl.screen_bytes);
+}
 
-    u_int32_t location;
-    for (u_int32_t y = 0; y < vinfo.yres; y++)
+void runTestPattern()
+{
+    u_int32_t color_index = 0;
+    for (u_int32_t y = 0; y < sensehat_ctl.var_info.yres; y++)
     {
-        for (u_int32_t x = 0; x < vinfo.xres; x++)
+        for (u_int32_t x = 0; x < sensehat_ctl.var_info.xres; x++)
         {
-            printf("Setting stuff at %u, %u\n", x, y);
-            location = getLocation(x, y, vinfo, finfo);
-            *(sh_mem + location) = SENSEHAT_WHITE;
-            sleep(1);
-            *(sh_mem + location) = SENSEHAT_OFF;
+            sensehat_ctl.pixels[getLocation(x, y)] = COLORS[color_index];
+
+            usleep(10000);
         }
+
+        color_index++;
+        color_index %= COLOR_COUNT;
     }
+
+    // Wait a bit and color the other way
+    usleep(100000);
+    for (u_int32_t x = 0; x < sensehat_ctl.var_info.xres; x++)
+    {
+        for (u_int32_t y = 0; y < sensehat_ctl.var_info.yres; y++)
+        {
+            sensehat_ctl.pixels[getLocation(x, y)] = COLORS[color_index];
+
+            usleep(10000);
+        }
+
+        color_index++;
+        color_index %= COLOR_COUNT;
+    }
+
+    // Wait a bit and then clear everything
+    usleep(1000000);
+    clearPixels();
 }
 
-// This function is called on the start of your application
-// Here you can initialize what ever you need for your task
-// return false if something fails, else true
-bool initializeSenseHat(u_int32_t *sh_filedesc, u_int16_t *sh_mem, struct fb_fix_screeninfo *sh_fix_info, struct fb_var_screeninfo *sh_var_info)
+bool initializeSenseHatJoystick()
 {
+    DIR *dir;
+    struct dirent *entry;
+
+    dir = opendir("/dev/input");
+
+    // Unable to open directory
+    if (!dir)
+    {
+        return false;
+    }
+
+    char file_path[64];
+    char name[512];
+
+    printf("Scanning /dev/input for sensehat joystick...\n");
+    while ((entry = readdir(dir)) != NULL)
+    {
+        strcpy(file_path, "/dev/input/");
+        strcat(file_path, (char *)&entry->d_name);
+
+        printf("Opening file descriptor of %s\n", file_path);
+        int filedesc = open(file_path, O_RDONLY | O_NONBLOCK); // Only need read access here
+        if (filedesc == -1)
+        {
+            printf("Error occurred while opening file descriptor %s\n", file_path);
+            continue;
+        }
+
+        // Will return length of string
+        if (ioctl(filedesc, EVIOCGNAME(sizeof(name)), &name) < 0)
+        {
+            printf("Failed to read name of input device %s\n", file_path);
+            continue;
+        }
+
+        printf("Device %s found\n", name);
+        if (strcmp(name, SENSEHAT_JS_NAME) != 0)
+        {
+            continue;
+        }
+
+        sensehat_joystick.filedesc = filedesc;
+        printf("Found sensehat joystick!\n");
+        break;
+    }
+
+    closedir(dir);
+    return sensehat_joystick.filedesc != 0;
+}
+
+bool initializeSenseHatLED()
+{
+    // Local variables here so that we don't change the global state
+    // until we are certain we have the right framebuffer
     struct fb_fix_screeninfo fixed_info;
     struct fb_var_screeninfo var_info;
 
@@ -132,7 +235,7 @@ bool initializeSenseHat(u_int32_t *sh_filedesc, u_int16_t *sh_mem, struct fb_fix
         }
 
         // Attempted to retrieve fixed screen info
-        if (ioctl(filedesc, FBIOGET_FSCREENINFO, &fixed_info))
+        if (ioctl(filedesc, FBIOGET_FSCREENINFO, &fixed_info) != 0)
         {
             // If an error occurs, will not return 0
             printf("Unable to load fixed screen info!\n");
@@ -146,39 +249,64 @@ bool initializeSenseHat(u_int32_t *sh_filedesc, u_int16_t *sh_mem, struct fb_fix
         }
 
         printf("Found sensehat at %s\n", file_path);
-        if (ioctl(filedesc, FBIOGET_VSCREENINFO, &var_info))
+        if (ioctl(filedesc, FBIOGET_VSCREENINFO, &var_info) != 0)
         {
             printf("Unable to load variable screen info!\n");
             return false;
         }
 
-        sh_fix_info = &fixed_info;
-        sh_var_info = &var_info;
-        sh_filedesc = &filedesc;
+        // We know that the amount of bits will be 16, but this wont hurt anything
+        long screen_bytes = var_info.xres * var_info.yres * (var_info.bits_per_pixel >> 3);
 
-        long screen_bytes = sh_var_info->xres * sh_var_info->yres * (sh_var_info->bits_per_pixel >> 3);
+        u_int16_t *sh_mem = (u_int16_t *)mmap(0, screen_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, filedesc, 0);
+        if (sh_mem == -1)
+        {
+            printf("An error occurred while mapping framebuffer to memory");
+            return false;
+        }
 
-        sh_mem = (u_int16_t *)mmap(0, screen_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, filedesc, 0);
-        memset(sh_mem, 0, screen_bytes);
+        if (game.grid.x > var_info.xres || game.grid.y > var_info.yres)
+        {
+            printf("Grid is too large for sensehat display! Grid is %u by %u, only support for %u by %u ",
+                   game.grid.x, game.grid.y, var_info.xres, var_info.yres);
+            return false;
+        }
 
-        runTestPattern(sh_mem, *sh_var_info, *sh_fix_info);
+        // Update variables so that they are accessible elsewhere
+        sensehat_ctl.filedesc = filedesc;
+        sensehat_ctl.pixels = sh_mem;
+        sensehat_ctl.fix_info = fixed_info;
+        sensehat_ctl.var_info = var_info;
+        sensehat_ctl.screen_bytes = screen_bytes;
+
+        // Start with a fresh "screen"
+        clearPixels();
+
+        //runTestPattern();
         printf("Successfully loaded sensehat display!\n");
-        closedir(dir);
-        return false;
+        break;
     }
 
     closedir(dir);
-    return false;
+    return sensehat_ctl.pixels != 0;
+}
+
+// This function is called on the start of your application
+// Here you can initialize what ever you need for your task
+// return false if something fails, else true
+bool initializeSenseHat()
+{
+    return initializeSenseHatLED() && initializeSenseHatJoystick();
 }
 
 // This function is called when the application exits
 // Here you can free up everything that you might have opened/allocated
-void freeSenseHat(u_int32_t *sh_filedesc, u_int16_t *sh_mem, struct fb_var_screeninfo *sh_var_info)
+void freeSenseHat()
 {
-    long screen_bytes = sh_var_info->xres * sh_var_info->yres * (sh_var_info->bits_per_pixel >> 3);
-
-    munmap(sh_mem, screen_bytes);
-    close(*sh_filedesc);
+    clearPixels();
+    munmap(sensehat_ctl.pixels, sensehat_ctl.screen_bytes);
+    close(sensehat_ctl.filedesc);
+    close(sensehat_joystick.filedesc);
 }
 
 // This function should return the key that corresponds to the joystick press
@@ -187,6 +315,38 @@ void freeSenseHat(u_int32_t *sh_filedesc, u_int16_t *sh_mem, struct fb_var_scree
 // !!! when nothing was pressed you MUST return 0 !!!
 int readSenseHatJoystick()
 {
+    // Shouldn't happen, but make sure here aswell
+    if (sensehat_joystick.filedesc == 0)
+    {
+        return 0;
+    }
+
+    int result = 0;
+
+    struct input_event event;
+
+    while (true)
+    {
+        ssize_t read_bytes = read(sensehat_joystick.filedesc, &event, sizeof(struct input_event));
+        if (read_bytes < 0)
+        {
+            break;
+        }
+
+        // No more events to read
+        if (read_bytes == 0)
+        {
+            break;
+        }
+
+        if (event.type != EV_KEY || event.value == 0)
+        {
+            continue;
+        }
+
+        return event.code;
+    }
+
     return 0;
 }
 
@@ -195,7 +355,21 @@ int readSenseHatJoystick()
 // has changed the playfield
 void renderSenseHatMatrix(bool const playfieldChanged)
 {
-    (void)playfieldChanged;
+    // No need to update
+    if (!playfieldChanged)
+    {
+        return;
+    }
+
+    clearPixels();
+    for (u_int32_t x = 0; x < game.grid.x; x++)
+    {
+        for (u_int32_t y = 0; y < game.grid.y; y++)
+        {
+            tile current = game.playfield[x][y];
+            sensehat_ctl.pixels[getLocation(x, y)] = current.color;
+        }
+    }
 }
 
 // The game logic uses only the following functions to interact with the playfield.
@@ -205,6 +379,11 @@ void renderSenseHatMatrix(bool const playfieldChanged)
 static inline void newTile(coord const target)
 {
     game.playfield[target.y][target.x].occupied = true;
+    game.playfield[target.y][target.x].color = COLORS[game.colorIndex];
+
+    // Increment to next color
+    game.colorIndex++;
+    game.colorIndex %= COLOR_COUNT;
 }
 
 static inline void copyTile(coord const to, coord const from)
@@ -554,12 +733,7 @@ int main(int argc, char **argv)
     // Start with gameOver
     gameOver();
 
-    u_int32_t *filedesc;
-    u_int16_t *sh_mem;
-    struct fb_var_screeninfo *sh_var_info;
-    struct fb_fix_screeninfo *sh_fix_info;
-
-    if (!initializeSenseHat(filedesc, sh_mem, sh_fix_info, sh_var_info))
+    if (!initializeSenseHat())
     {
         fprintf(stderr, "ERROR: could not initilize sense hat\n");
         return 1;
@@ -595,7 +769,7 @@ int main(int argc, char **argv)
         game.tick = (game.tick + 1) % game.nextGameTick;
     }
 
-    freeSenseHat(filedesc, sh_mem, sh_var_info);
+    freeSenseHat();
     free(game.playfield);
     free(game.rawPlayfield);
 
