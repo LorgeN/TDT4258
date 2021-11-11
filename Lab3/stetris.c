@@ -11,6 +11,7 @@
 #include <poll.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 
 // The game state can be used to detect what happens on the playfield
 #define GAMEOVER 0
@@ -18,6 +19,8 @@
 #define ROW_CLEAR (1 << 1)
 #define TILE_ADDED (1 << 2)
 #define SENSEHAT_FB_NAME "RPi-Sense FB"
+#define SENSEHAT_WHITE 0xFFFF
+#define SENSEHAT_OFF 0x0
 
 // If you extend this structure, either avoid pointers or adjust
 // the game logic allocate/deallocate and reset the memory
@@ -63,12 +66,36 @@ gameConfig game = {
     .initNextGameTick = 50,
 };
 
+u_int32_t getLocation(u_int8_t x, u_int8_t y, struct fb_var_screeninfo vinfo, struct fb_fix_screeninfo finfo)
+{
+    return x + vinfo.xoffset + (y + vinfo.yoffset) * vinfo.xres;
+}
+
+void runTestPattern(u_int16_t *sh_mem, struct fb_var_screeninfo vinfo, struct fb_fix_screeninfo finfo)
+{
+    printf("Running test pattern! Display is %u by %u\n", vinfo.yres, vinfo.xres);
+
+    u_int32_t location;
+    for (u_int32_t y = 0; y < vinfo.yres; y++)
+    {
+        for (u_int32_t x = 0; x < vinfo.xres; x++)
+        {
+            printf("Setting stuff at %u, %u\n", x, y);
+            location = getLocation(x, y, vinfo, finfo);
+            *(sh_mem + location) = SENSEHAT_WHITE;
+            sleep(1);
+            *(sh_mem + location) = SENSEHAT_OFF;
+        }
+    }
+}
+
 // This function is called on the start of your application
 // Here you can initialize what ever you need for your task
 // return false if something fails, else true
-bool initializeSenseHat()
+bool initializeSenseHat(u_int32_t *sh_filedesc, u_int16_t *sh_mem, struct fb_fix_screeninfo *sh_fix_info, struct fb_var_screeninfo *sh_var_info)
 {
     struct fb_fix_screeninfo fixed_info;
+    struct fb_var_screeninfo var_info;
 
     DIR *dir;
     struct dirent *entry;
@@ -94,28 +121,50 @@ bool initializeSenseHat()
 
         char file_path[8];
         strcpy(file_path, "/dev/");
-        strcat(file_path, &entry->d_name);
+        strcat(file_path, (char *)&entry->d_name);
 
         printf("Opening file descriptor of %s\n", file_path);
         int filedesc = open(file_path, O_RDWR);
-        if (filedesc == -1) {
+        if (filedesc == -1)
+        {
             printf("Error occurred while opening file descriptor %s\n", file_path);
             continue;
         }
-        
+
         // Attempted to retrieve fixed screen info
-        if (ioctl(filedesc, FBIOGET_FSCREENINFO, &fixed_info)) {
+        if (ioctl(filedesc, FBIOGET_FSCREENINFO, &fixed_info))
+        {
             // If an error occurs, will not return 0
             printf("Unable to load fixed screen info!\n");
             continue;
         }
 
         printf("ID is %s!\n", fixed_info.id);
-        if (strcmp(fixed_info.id, SENSEHAT_FB_NAME) == 0) {
-            printf("Found sensehat at %s\n", file_path);
-            closedir(dir);
-            return true;
+        if (strcmp(fixed_info.id, SENSEHAT_FB_NAME) != 0)
+        {
+            continue;
         }
+
+        printf("Found sensehat at %s\n", file_path);
+        if (ioctl(filedesc, FBIOGET_VSCREENINFO, &var_info))
+        {
+            printf("Unable to load variable screen info!\n");
+            return false;
+        }
+
+        sh_fix_info = &fixed_info;
+        sh_var_info = &var_info;
+        sh_filedesc = &filedesc;
+
+        long screen_bytes = sh_var_info->xres * sh_var_info->yres * (sh_var_info->bits_per_pixel >> 3);
+
+        sh_mem = (u_int16_t *)mmap(0, screen_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, filedesc, 0);
+        memset(sh_mem, 0, screen_bytes);
+
+        runTestPattern(sh_mem, *sh_var_info, *sh_fix_info);
+        printf("Successfully loaded sensehat display!\n");
+        closedir(dir);
+        return false;
     }
 
     closedir(dir);
@@ -124,8 +173,12 @@ bool initializeSenseHat()
 
 // This function is called when the application exits
 // Here you can free up everything that you might have opened/allocated
-void freeSenseHat()
+void freeSenseHat(u_int32_t *sh_filedesc, u_int16_t *sh_mem, struct fb_var_screeninfo *sh_var_info)
 {
+    long screen_bytes = sh_var_info->xres * sh_var_info->yres * (sh_var_info->bits_per_pixel >> 3);
+
+    munmap(sh_mem, screen_bytes);
+    close(*sh_filedesc);
 }
 
 // This function should return the key that corresponds to the joystick press
@@ -501,7 +554,12 @@ int main(int argc, char **argv)
     // Start with gameOver
     gameOver();
 
-    if (!initializeSenseHat())
+    u_int32_t *filedesc;
+    u_int16_t *sh_mem;
+    struct fb_var_screeninfo *sh_var_info;
+    struct fb_fix_screeninfo *sh_fix_info;
+
+    if (!initializeSenseHat(filedesc, sh_mem, sh_fix_info, sh_var_info))
     {
         fprintf(stderr, "ERROR: could not initilize sense hat\n");
         return 1;
@@ -537,7 +595,7 @@ int main(int argc, char **argv)
         game.tick = (game.tick + 1) % game.nextGameTick;
     }
 
-    freeSenseHat();
+    freeSenseHat(filedesc, sh_mem, sh_var_info);
     free(game.playfield);
     free(game.rawPlayfield);
 
