@@ -367,6 +367,12 @@ void renderSenseHatMatrix(bool const playfieldChanged)
         for (u_int32_t y = 0; y < game.grid.y; y++)
         {
             tile current = game.playfield[x][y];
+            // Could optionally drop the clearPixels() call and just set it to
+            // current.color (since this will be 0 if it isn't occupied)
+            if (!current.occupied) {
+                continue;
+            }
+
             sensehat_ctl.pixels[getLocation(x, y)] = current.color;
         }
     }
