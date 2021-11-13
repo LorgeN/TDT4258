@@ -29,7 +29,7 @@
 typedef struct
 {
     bool occupied;
-    u_int16_t color;
+    u_int16_t color; // This is the color value (raw RGB565) for this tile
 } tile;
 
 typedef struct
@@ -62,6 +62,8 @@ typedef struct
                                 // lowers with increasing level, never reaches 0
 } gameConfig;
 
+
+// Pointers and information for controlling the Sensehat LED matrix
 typedef struct
 {
     int filedesc;
@@ -71,6 +73,7 @@ typedef struct
     struct fb_var_screeninfo var_info;
 } sensehat_ctl_t;
 
+// Information needed to read input from the Sensehat joystick
 typedef struct
 {
     int filedesc;
@@ -96,51 +99,18 @@ u_int16_t COLOR_COUNT = sizeof(COLORS) / sizeof(u_int16_t);
 u_int32_t getLocation(u_int8_t x, u_int8_t y)
 {
     // Inverted x and y coordinates so that it is natural to play using
-    // the joystick with the right thumb.
+    // the joystick with the right thumb. This makes it so the tiles
+    // fall towards the side with the power port.
     return y + sensehat_ctl.var_info.xoffset + (x + sensehat_ctl.var_info.yoffset) * sensehat_ctl.var_info.xres;
 }
 
+// Clears (Turns off) the entire LED display matrix 
 void clearPixels()
 {
     memset(sensehat_ctl.pixels, 0, sensehat_ctl.screen_bytes);
 }
 
-void runTestPattern()
-{
-    u_int32_t color_index = 0;
-    for (u_int32_t y = 0; y < sensehat_ctl.var_info.yres; y++)
-    {
-        for (u_int32_t x = 0; x < sensehat_ctl.var_info.xres; x++)
-        {
-            sensehat_ctl.pixels[getLocation(x, y)] = COLORS[color_index];
-
-            usleep(10000);
-        }
-
-        color_index++;
-        color_index %= COLOR_COUNT;
-    }
-
-    // Wait a bit and color the other way
-    usleep(100000);
-    for (u_int32_t x = 0; x < sensehat_ctl.var_info.xres; x++)
-    {
-        for (u_int32_t y = 0; y < sensehat_ctl.var_info.yres; y++)
-        {
-            sensehat_ctl.pixels[getLocation(x, y)] = COLORS[color_index];
-
-            usleep(10000);
-        }
-
-        color_index++;
-        color_index %= COLOR_COUNT;
-    }
-
-    // Wait a bit and then clear everything
-    usleep(1000000);
-    clearPixels();
-}
-
+// Finds and initializes the sensehat joystick if it is present on the system
 bool initializeSenseHatJoystick()
 {
     DIR *dir;
@@ -171,7 +141,7 @@ bool initializeSenseHatJoystick()
             continue;
         }
 
-        // Will return length of string
+        // Will return length of string, or less than 0 if an error occurs
         if (ioctl(filedesc, EVIOCGNAME(sizeof(name)), &name) < 0)
         {
             printf("Failed to read name of input device %s\n", file_path);
@@ -282,7 +252,6 @@ bool initializeSenseHatLED()
         // Start with a fresh "screen"
         clearPixels();
 
-        //runTestPattern();
         printf("Successfully loaded sensehat display!\n");
         break;
     }
@@ -321,32 +290,34 @@ int readSenseHatJoystick()
         return 0;
     }
 
-    int result = 0;
-
     struct input_event event;
 
+    // Read in a while loop since there may be events we don't care about, and we don't
+    // want those to block a legit read
     while (true)
     {
         ssize_t read_bytes = read(sensehat_joystick.filedesc, &event, sizeof(struct input_event));
-        if (read_bytes < 0)
-        {
-            break;
-        }
-
         // No more events to read
-        if (read_bytes == 0)
+        if (read_bytes <= 0)
         {
             break;
         }
 
+        // Check if we are looking at the right event type, and that this event doesn't
+        // indicate that the key has been released. Event code 1 and 2 are what we want,
+        // which correspond to pressed and continuation. 0 is release.
         if (event.type != EV_KEY || event.value == 0)
         {
             continue;
         }
 
+        // We can return directly here because they joystick physically does not allow
+        // more than one button to be pressed at once. event.code corresponds correctly
+        // to our key mappings due to the rotation of our screen/LED matrix.
         return event.code;
     }
 
+    // No events found, meaning nothing is pressed
     return 0;
 }
 
@@ -361,18 +332,13 @@ void renderSenseHatMatrix(bool const playfieldChanged)
         return;
     }
 
-    clearPixels();
     for (u_int32_t x = 0; x < game.grid.x; x++)
     {
         for (u_int32_t y = 0; y < game.grid.y; y++)
         {
             tile current = game.playfield[x][y];
-            // Could optionally drop the clearPixels() call and just set it to
-            // current.color (since this will be 0 if it isn't occupied)
-            if (!current.occupied) {
-                continue;
-            }
-
+            // Here abusing the fact that color will be 0 (i. e. off) for any unoccupied
+            // tile. This avoids a clearPixels() call and an if-statement within the loop
             sensehat_ctl.pixels[getLocation(x, y)] = current.color;
         }
     }
@@ -381,7 +347,6 @@ void renderSenseHatMatrix(bool const playfieldChanged)
 // The game logic uses only the following functions to interact with the playfield.
 // if you choose to change the playfield or the tile structure, you might need to
 // adjust this game logic <> playfield interface
-
 static inline void newTile(coord const target)
 {
     game.playfield[target.y][target.x].occupied = true;
