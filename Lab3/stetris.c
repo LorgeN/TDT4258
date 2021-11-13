@@ -62,7 +62,6 @@ typedef struct
                                 // lowers with increasing level, never reaches 0
 } gameConfig;
 
-
 // Pointers and information for controlling the Sensehat LED matrix
 typedef struct
 {
@@ -104,7 +103,7 @@ u_int32_t getLocation(u_int8_t x, u_int8_t y)
     return y + sensehat_ctl.var_info.xoffset + (x + sensehat_ctl.var_info.yoffset) * sensehat_ctl.var_info.xres;
 }
 
-// Clears (Turns off) the entire LED display matrix 
+// Clears (Turns off) the entire LED display matrix
 void clearPixels()
 {
     memset(sensehat_ctl.pixels, 0, sensehat_ctl.screen_bytes);
